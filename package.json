@@ -1,0 +1,55 @@
+{
+  "watch": {
+    "build": {
+      "patterns": [
+        "src",
+        "public"
+      ],
+      "extensions": "ts,json,vue",
+      "delay": 10000
+    }
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "run-p type-check \"build-only {@}\" --",
+    "preview": "vite preview",
+    "test:unit": "vitest",
+    "build-only": "run-s clean-dist build-all",
+    "build-all": "run-p build-content build-worker build-vue",
+    "build-vue": "vite build --emptyOutDir false",
+    "build-content": "vite build -c vite.script.config.ts --emptyOutDir false",
+    "build-worker": "vite build -c vite.worker.config.ts --emptyOutDir false",
+    "clean-dist": "del-cli dist/*",
+    "watch": "npm-watch build",
+    "type-check": "vue-tsc --noEmit -p tsconfig.vitest.json --composite false",
+    "lint": "eslint . --ext .vue,.js,.jsx,.cjs,.mjs,.ts,.tsx,.cts,.mts --fix --ignore-path .gitignore"
+  },
+  "dependencies": {
+    "bilibili-live-ws": "^6.3.1",
+    "js-file-download": "^0.4.12",
+    "vue": "^3.3.4",
+    "vue-router": "^4.2.4"
+  },
+  "devDependencies": {
+    "@rushstack/eslint-patch": "^1.3.3",
+    "@tsconfig/node18": "^18.2.2",
+    "@types/jsdom": "^21.1.3",
+    "@types/node": "^18.17.17",
+    "@vitejs/plugin-vue": "^4.3.4",
+    "@vitejs/plugin-vue-jsx": "^3.0.2",
+    "@vue/eslint-config-typescript": "^12.0.0",
+    "@vue/test-utils": "^2.4.1",
+    "@vue/tsconfig": "^0.4.0",
+    "chrome-types": "^0.1.231",
+    "del-cli": "^5.1.0",
+    "eslint": "^8.49.0",
+    "eslint-plugin-vue": "^9.17.0",
+    "jsdom": "^22.1.0",
+    "npm-run-all2": "^6.0.6",
+    "npm-watch": "^0.11.0",
+    "typescript": "~5.2.0",
+    "vite": "^4.4.9",
+    "vitest": "^0.34.4",
+    "vue-tsc": "^1.8.11"
+  }
+}

@@ -1,0 +1,35 @@
+{
+  "manifest_version": 3,
+  "name": "BliveJournal",
+  "version": "0.0.1",
+  "minimum_chrome_version": "109.0",
+  "permissions": [
+    "cookies",
+    "offscreen",
+    "storage",
+    "unlimitedStorage"
+  ],
+  "host_permissions": [
+    "*://*.bilibili.com/*"
+  ],
+  "background": {
+    "service_worker": "js/blive-journal-worker.js"
+  },
+  "action": {
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "js": ["js/blive-journal-content.js"],
+      "run_at": "document_start",
+      "all_frames": true,
+      "matches": [
+        "*://live.bilibili.com/*"
+      ]
+    }
+  ],
+  "web_accessible_resources": [{
+    "resources": ["js/ws-hook.js"],
+    "matches": ["*://live.bilibili.com/*"]
+  }]
+}
