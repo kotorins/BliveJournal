@@ -1,139 +1,26 @@
-import { getConfig } from './configs';
-import { getDefault, timestampDayFloor, objNumKeys, unzipObj, gzipObj, asyncSleep } from './utils';
+import Dixie, { type Table } from 'dexie';
+
+import { getConfig, getUploadEndpoints, type Config } from './configs';
+import { objKeys, getDefault, timestampDayFloor, objNumKeys, gzipObj, unzipObj, timedFetch } from './utils';
 
 export type DanmakuStoreKeys = 'danmaku' | 'hookedDanmaku';
 export type DanmakuArchiveStoreKeys = 'danmakuArchive' | 'hookedDanmakuArchive';
-export type DanmakuDBKeys = DanmakuStoreKeys | DanmakuArchiveStoreKeys | 'roominfo';
+export type DanmakuDBKeys = DanmakuStoreKeys | DanmakuArchiveStoreKeys | 'roominfo' | 'uploadLog' | 'uploadSuccess';
 
-type DBOpener = (onerror?: (e: Error) => void) => IDBOpenDBRequest
 
-const openDanmakuDB: DBOpener = (onerror?: (e: Error) => void) => {
-  const request = indexedDB.open('DanmakuStore', 8);
-  request.onblocked = (e) => { console.error(e); onerror && onerror(new Error(e.toString())) };
-  request.onerror = (e) => { console.error(e); onerror && onerror(new Error(e.toString())) };
-  request.onupgradeneeded = (event) => {
-    const db = request.result;
-    const createIndex = (objStore: IDBObjectStore, indexPath: string | string[]) => {
-      if (indexPath instanceof Array) {
-        objStore.createIndex(indexPath.join(', '), indexPath);
-      } else {
-        objStore.createIndex(indexPath, indexPath);
-      }
-    };
-    const createIncStore = (storeName: string, indicies: (string | string[])[]) => {
-      const objStore = db.createObjectStore(storeName, { autoIncrement: true });
-      indicies.forEach(indexPath => { createIndex(objStore, indexPath) });
-      return objStore;
-    };
-    const addIndexToStore = (storeName: string, indicies: (string | string[])[]) => {
-      const transaction = request.transaction;
-      if (transaction) {
-        const objStore = transaction.objectStore(storeName);
-        indicies.forEach(indexPath => { createIndex(objStore, indexPath) });
-      } else {
-        throw new Error(`failed to add index to store ${storeName}, db transaction is null`);
-      }
-    };
-    if (event.oldVersion < 8) {
-      createIncStore('danmaku', ['roomid', 'timestamp', ['roomid', 'timestamp']]);
-      createIncStore('hookedDanmaku', ['roomid', 'timestamp', ['roomid', 'timestamp']]);
-      createIncStore('roominfo', ['roomid', 'timestamp']);
-      createIncStore('danmakuArchive', ['roomid', 'timestamp', 'cleaned', ['roomid', 'timestamp']]);
-      createIncStore('hookedDanmakuArchive', ['roomid', 'timestamp', 'cleaned', ['roomid', 'timestamp']]);
-    }
+
+export type RecordType = 'danmaku' | 'hookedDanmaku'
+const recordTypes: RecordType[] = ['danmaku', 'hookedDanmaku'];
+const typeToStore: Record<RecordType, { store: DanmakuStoreKeys, archive: DanmakuArchiveStoreKeys }> = {
+  danmaku: {
+    store: 'danmaku',
+    archive: 'danmakuArchive',
+  },
+  hookedDanmaku: {
+    store: 'hookedDanmaku',
+    archive: 'hookedDanmakuArchive',
   }
-  return request;
 };
-
-const openTransaction = (request: IDBOpenDBRequest, storeNames: string | string[], mode: IDBTransactionMode, onerror?: (e: Error) => void) => {
-  const transaction = request.result.transaction(storeNames, mode);
-  transaction.onerror = (e) => { console.error(e); onerror && onerror(new Error(e.toString())) };
-  transaction.onabort = (e) => { console.error(e); onerror && onerror(new Error(e.toString())) };
-  return transaction;
-};
-
-const toAsync = <V, T extends unknown[]>(func: (callback: (values: V) => void, onerror: (e: Error) => void, ...args: T) => void): (...args: T) => Promise<V> => {
-  return ((...args) => new Promise((resolve, reject) => {
-    func(resolve, reject, ...args);
-  }));
-};
-
-const commitToIDB = toAsync((oncomplete: (v: void) => void, onerror, opener: DBOpener, data: { [storeName in DanmakuDBKeys]?: any[] }) => {
-  if (!Object.values(data).filter(items => items.length).length) return;
-  const request = opener(onerror);
-  request.onsuccess = () => {
-    const transaction = openTransaction(request, Object.keys(data), 'readwrite', onerror);
-    transaction.oncomplete = () => {
-      console.debug(`${Object.keys(data)} commit completed`);
-      request.result.close();
-      oncomplete();
-    };
-
-    Object.keys(data).forEach((storeName) => {
-      const objStore = transaction.objectStore(storeName);
-      (data[storeName as DanmakuDBKeys] || []).forEach((item: any) => {
-        const action = objStore.add(item);
-        action.onerror = console.error;
-        action.onsuccess = () => { console.debug(`data added to ${storeName}`, item); };
-      });
-    });
-  };
-});
-
-const removeFromIDB = toAsync((oncomplete: (v: void) => void, onerror, opener: DBOpener, entryKeys: { [storeName in DanmakuDBKeys]?: number[] }) => {
-  if (!Object.values(entryKeys).filter(items => items.length).length) return;
-  const request = opener(onerror);
-  request.onsuccess = () => {
-    const transaction = openTransaction(request, Object.keys(entryKeys), 'readwrite', onerror);
-    transaction.oncomplete = () => {
-      console.debug(`${Object.keys(entryKeys)} commit completed`);
-      request.result.close();
-      oncomplete();
-    };
-
-    Object.keys(entryKeys).forEach((storeName) => {
-      const objStore = transaction.objectStore(storeName);
-      const keys = entryKeys[storeName as DanmakuDBKeys] || [];
-      const removeKeys = () => {
-        const key = keys.shift();
-        if (key) {
-          const action = objStore.delete(key);
-          action.onerror = (e) => { console.error(e); onerror(new Error(e.toString())) };
-          action.onsuccess = () => {
-            console.debug(`entry deleted from ${storeName}`);
-            removeKeys();
-          };
-        }
-      };
-      removeKeys();
-    });
-  };
-});
-
-
-const removeEntriesByIndex = toAsync((oncomplete: (v: void) => void, onerror, opener: DBOpener, storeName: DanmakuStoreKeys | DanmakuArchiveStoreKeys, indexName: string, query?: IDBKeyRange) => {
-  const request = opener(onerror);
-  request.onsuccess = () => {
-    const transaction = openTransaction(request, storeName, 'readwrite', onerror);
-    transaction.oncomplete = () => {
-      console.debug(`${storeName} old removal completed`);
-      request.result.close();
-      oncomplete();
-    };
-    const idx = transaction.objectStore(storeName).index(indexName);
-    const cursorReq = idx.openCursor(query);
-    cursorReq.onerror = console.error;
-    cursorReq.onsuccess = (event) => {
-      const cursor = (event as Event & { target?: { result?: IDBCursor } }).target?.result;
-      if (cursor) {
-        cursor.delete();
-        console.debug(`removed entry ${cursor.primaryKey} from ${storeName}`);
-        cursor.continue();
-      }
-    };
-  };
-});
-
 
 export type DanmakuData = {
   roomid: number,
@@ -145,275 +32,265 @@ export type GzippedData = {
   timestamp: number,
   gzipped: Blob,
 };
-export type ArchiveDanmakuData = DanmakuData & { key: number };
 export type ArchiveGzipData = GzippedData & { cleaned: 0 | 1 };
 
-const commitDanmakuItems = (data: { [storeName in DanmakuStoreKeys]?: DanmakuData[] }) => {
-  commitToIDB(openDanmakuDB, data);
+type UploadSuccessData = {
+  roomid: number,
+  timestamp: number,
+  type: RecordType,
+  endpoint: string,
+  success: boolean,
 };
-const commitRoomMeta = (data: GzippedData) => { commitToIDB(openDanmakuDB, { roominfo: [data] }); };
-
-
-const queryDBWithCursor = toAsync(<V>(callback: (entries: V) => void, onerror: (e: Error) => void, opener: DBOpener, storeName: string, entries: V, oncursor: (entries: V, cursor: IDBCursorWithValue) => boolean, indexName?: string, query?: IDBKeyRange, direction?: IDBCursorDirection, mode?: IDBTransactionMode) => {
-  const request = opener(onerror);
-  request.onsuccess = () => {
-    const transaction = openTransaction(request, storeName, mode || 'readonly', onerror);
-    transaction.oncomplete = () => {
-      request.result.close();
-      callback(entries);
-    };
-
-    const objStore = transaction.objectStore(storeName);
-    const cursorReq = (indexName ? objStore.index(indexName) : objStore).openCursor(query, direction);
-    cursorReq.onerror = console.error;
-    cursorReq.onsuccess = (event) => {
-      const cursor = (event as Event & { target?: { result?: IDBCursorWithValue } }).target?.result;
-      if (cursor) {
-        if (oncursor(entries, cursor)) cursor.continue();
-      }
-    };
-  };
-});
-
-
-const queryDBValues = toAsync(<V>(callback: (entries: V[]) => void, onerror: (e: Error) => void, opener: DBOpener, storeName: string, indexName?: string, query?: IDBKeyRange) => {
-  const request = opener(onerror);
-  request.onsuccess = () => {
-    const transaction = openTransaction(request, storeName, 'readonly', onerror);
-    let entries: V[] = [];
-
-    transaction.oncomplete = () => {
-      request.result.close();
-      callback(entries);
-    };
-
-    const objStore = transaction.objectStore(storeName);
-    const queryReq = (indexName ? objStore.index(indexName) : objStore).getAll(query);
-    queryReq.onerror = console.error;
-    queryReq.onsuccess = () => {
-      entries = queryReq.result;
-    };
-  };
-});
-
-
-const queryStoreRooms = async (opener: DBOpener, storeName: DanmakuStoreKeys | DanmakuArchiveStoreKeys) => {
-  const oncursor = (entries: number[], cursor: IDBCursor) => {
-    entries.push(Number(cursor.key));
-    return true;
-  };
-  return await queryDBWithCursor(opener, storeName, [] as number[], oncursor, 'roomid', undefined, 'nextunique');
+type LogData = {
+  timestamp: number,
+  level: string,
+  msg: string,
 };
 
-const queryDanmakuTimestamps = toAsync((callback: (entries: Set<number>) => void, onerror: (e: Error) => void, opener: DBOpener, storeName: DanmakuStoreKeys, archiveStoreName: DanmakuArchiveStoreKeys, roomid: number) => {
-  const request = opener(onerror);
-  request.onsuccess = () => {
-    const transaction = openTransaction(request, [storeName, archiveStoreName], 'readonly', onerror);
 
-    const timestamps: Set<number> = new Set();
+type AutoIncTable<T> = Table<T, number>;
+class DanmakuDB extends Dixie {
+  danmaku!: AutoIncTable<DanmakuData>;
+  hookedDanmaku!: AutoIncTable<DanmakuData>;
+  danmakuArchive!: AutoIncTable<ArchiveGzipData>;
+  hookedDanmakuArchive!: AutoIncTable<ArchiveGzipData>;
+  roominfo!: AutoIncTable<GzippedData>;
+  uploadSuccess!: AutoIncTable<UploadSuccessData>;
+  uploadLog!: AutoIncTable<LogData>
 
-    transaction.oncomplete = () => {
-      request.result.close();
-      callback(timestamps);
-    };
-
-    const addTimestamp = (timestamp: number) => {
-      if (!isNaN(timestamp)) timestamps.add(timestamp);
-    };
-
-    const queryArchive = () => {
-      const idx = transaction.objectStore(archiveStoreName).index('roomid, timestamp');
-      const cursorReq = idx.openKeyCursor(IDBKeyRange.bound([roomid, 0], [roomid, Date.now()]), 'nextunique');
-      cursorReq.onerror = console.error;
-      cursorReq.onsuccess = (event) => {
-        const cursor = (event as Event & { target?: { result?: IDBCursor } }).target?.result;
-        if (cursor) {
-          const timestamp = (cursor.key as IDBValidKey[])[1];
-          addTimestamp(Number(timestamp));
-          cursor.continue();
-        }
-      };
-    };
-
-    const queryCurrent = () => {
-      const idx = transaction.objectStore(storeName).index('roomid');
-      ['next', 'prev'].forEach(direction => {
-        idx.openCursor(IDBKeyRange.only(roomid), direction as IDBCursorDirection).onsuccess = (event) => {
-          const cursor = (event as Event & { target?: { result?: IDBCursorWithValue } }).target?.result;
-          if (cursor) {
-            const timestamp = Number((cursor.value as DanmakuData).timestamp);
-            if (!isNaN(timestamp)) addTimestamp(timestampDayFloor(timestamp));
-          }
-        }
-      });
-    };
-    queryCurrent();
-    queryArchive();
-  };
-});
-
-
-export type QueriedDanmaku = { [roomid: number]: ArchiveDanmakuData[] };
-
-const queryDanmakuData = async (opener: DBOpener, storeName: string, indexName?: string, query?: IDBKeyRange) => {
-  const oncursor = (entries: QueriedDanmaku, cursor: IDBCursorWithValue) => {
-    const item: DanmakuData = cursor.value;
-    getDefault(entries, item.roomid, []).push({ key: Number(cursor.primaryKey), ...item });
-    return true;
+  constructor() {
+    super('DanmakuStore');
+    this.version(14).stores({
+      danmaku: '++, roomid, timestamp, [roomid+timestamp]',
+      hookedDanmaku: '++, roomid, timestamp, [roomid+timestamp]',
+      danmakuArchive: '++, roomid, timestamp, cleaned, [roomid+timestamp]',
+      hookedDanmakuArchive: '++, roomid, timestamp, cleaned, [roomid+timestamp]',
+      roominfo: '++, roomid, timestamp, [roomid+timestamp]',
+      uploadSuccess: '++, roomid, type, timestamp, endpoint, [type+timestamp], &[roomid+type+timestamp+endpoint]',
+      uploadLog: '++, timestamp, level',
+    });
   }
-  return await queryDBWithCursor(opener, storeName, {} as QueriedDanmaku, oncursor, indexName, query);
-};
-
-
-const updateCleaned = async (opener: DBOpener, archiveStoreName: DanmakuArchiveStoreKeys, entries: { key: number }[]) => {
-  const primaryKeys = new Set(Object.values(entries).map(i => i.key));
-  const oncursor = (entries: [], cursor: IDBCursorWithValue) => {
-    const item: ArchiveGzipData = cursor.value;
-    if (primaryKeys.has(Number(cursor.primaryKey))) {
-      item.cleaned = 1;
-      cursor.update(item);
-    }
-    return true;
-  };
-  await queryDBWithCursor(opener, archiveStoreName, [], oncursor, 'cleaned', IDBKeyRange.only(0), undefined, 'readwrite');
 }
 
-
-const removeArchivedEntries = async (opener: DBOpener, srcName: DanmakuStoreKeys, targetName: DanmakuArchiveStoreKeys) => {
-  const oncursor = (entries: (ArchiveGzipData & { key: number })[], cursor: IDBCursorWithValue) => {
-    const item: ArchiveGzipData = cursor.value;
-    entries.push({ ...item, key: Number(cursor.primaryKey) });
-    return true;
-  }
-  const archivedEntries = await queryDBWithCursor(
-    opener, targetName, [] as (ArchiveGzipData & { key: number })[], oncursor, 'cleaned', IDBKeyRange.only(0));
-
-  for (const entry of archivedEntries) {
-    const entries: ArchiveDanmakuData[] = await unzipObj(entry.gzipped);
-    let primaryKeys = entries.map(i => i.key);
-    while (primaryKeys.length) {
-      await removeFromIDB(opener, { [srcName]: primaryKeys.slice(0, 100) });
-      await asyncSleep(100);
-      primaryKeys = primaryKeys.slice(100);
-    }
-  }
-  await updateCleaned(opener, targetName, archivedEntries);
-};
+const db = new DanmakuDB();
+console.debug(db);
 
 
-const archiveDanmakuEntries = async (opener: DBOpener, srcName: DanmakuStoreKeys, targetName: DanmakuArchiveStoreKeys, allroomsEntries: QueriedDanmaku) => {
-  for (const roomid of objNumKeys(allroomsEntries)) {
-    const entriesByDay: { [floorTs: number]: ArchiveDanmakuData[] } = {};
-    allroomsEntries[roomid].forEach(entry => {
-      getDefault(entriesByDay, timestampDayFloor(entry.timestamp), []).push(entry);
-    });
-    console.debug('parsed entries for room ', srcName, roomid);
-    const archiveEntries: ArchiveGzipData[] = [];
-    for (const timestamp of objNumKeys(entriesByDay)) {
-      archiveEntries.push({ roomid, timestamp, gzipped: await gzipObj(entriesByDay[timestamp]), cleaned: 0 });
-    }
-    console.debug('gzipped entries for room ', srcName, roomid);
-    await commitToIDB(opener, { [targetName]: archiveEntries });
-    await removeArchivedEntries(opener, srcName, targetName);
+const commitDanmakuItems = async (data: { [type in RecordType]: DanmakuData[] }) => {
+  for (const type of objKeys(data)) {
+    await db[typeToStore[type].store].bulkAdd(data[type]);
   }
 };
 
-const removeOldArchiveEntries = async (opener: DBOpener, storeName: DanmakuArchiveStoreKeys, keepDays: number) => {
-  const timestamp = timestampDayFloor(Date.now(), keepDays);
-  removeEntriesByIndex(opener, storeName, 'timestamp', IDBKeyRange.upperBound(timestamp, true));
+const commitRoomMeta = async (data: GzippedData) => {
+  await db.roominfo.add(data);
 };
 
-const archiveDanmakuData = async (opener: DBOpener, srcName: DanmakuStoreKeys, targetName: DanmakuArchiveStoreKeys) => {
-  await removeArchivedEntries(opener, srcName, targetName);
-  const allroomEntries = await queryDanmakuData(opener, srcName, 'timestamp', IDBKeyRange.upperBound(timestampDayFloor(0), true));
-  console.debug('queried entries from ', srcName, allroomEntries);
-  await archiveDanmakuEntries(opener, srcName, targetName, allroomEntries);
+const getRecordRooms = async (type: RecordType): Promise<Set<number>> => {
+  const roomids = (await db[typeToStore[type].store].orderBy('roomid').uniqueKeys()).concat(
+    await db[typeToStore[type].archive].orderBy('roomid').uniqueKeys()
+  );
+  return new Set(roomids as number[]);
 };
 
-const archiveDanmaku = async () => {
-  console.debug('archiving loose danmaku records');
-  await archiveDanmakuData(openDanmakuDB, 'danmaku', 'danmakuArchive');
-  await removeOldArchiveEntries(openDanmakuDB, 'danmakuArchive', (await getConfig()).archiveKeepDays);
-  await archiveDanmakuData(openDanmakuDB, 'hookedDanmaku', 'hookedDanmakuArchive');
-  await removeOldArchiveEntries(openDanmakuDB, 'hookedDanmakuArchive', (await getConfig()).webArchiveKeepDays);
-};
-
-
-export type RecordType = 'danmaku' | 'hookedDanmaku'
-const getRecordRooms = async (type: RecordType) => {
-  let roomids: number[] = [];
-  if (type === 'danmaku') {
-    roomids = roomids.concat(await queryStoreRooms(openDanmakuDB, 'danmaku'))
-    roomids = roomids.concat(await queryStoreRooms(openDanmakuDB, 'danmakuArchive'))
-    return new Set(roomids);
-  } else {
-    roomids = roomids.concat(await queryStoreRooms(openDanmakuDB, 'hookedDanmaku'))
-    roomids = roomids.concat(await queryStoreRooms(openDanmakuDB, 'hookedDanmakuArchive'))
-    return new Set(roomids);
+const getRoomTimestamps = async (roomid: number, type: RecordType): Promise<Set<number>> => {
+  const stores = typeToStore[type];
+  const timestamps: Set<number> = new Set();
+  const addTs = (data?: { timestamp: number }) => {
+    data && timestamps.add(timestampDayFloor(data.timestamp));
   }
+  const store = db[stores.store].where(['roomid', 'timestamp']).between([roomid, 0], [roomid, Date.now()]);
+  addTs(await store.first());
+  addTs(await store.last());
+
+  const archive = db[stores.archive].where(['roomid', 'timestamp']).between([roomid, 0], [roomid, Date.now()]);
+  await archive.eachUniqueKey((key, cursor) => {
+    addTs({ timestamp: (key as number[])[1] });
+  });
+  return timestamps
 };
 
-const getRoomTimestamps = (roomid: number, type: RecordType) => {
-  if (type === 'danmaku') {
-    return queryDanmakuTimestamps(openDanmakuDB, 'danmaku', 'danmakuArchive', roomid)
-  } else {
-    return queryDanmakuTimestamps(openDanmakuDB, 'hookedDanmaku', 'hookedDanmakuArchive', roomid)
-  }
-};
 
+const getDanmakuEntries = async (roomid: number, type: RecordType, timestamp: number) => {
+  const stores = typeToStore[type];
+  let entries: DanmakuData[] = [];
 
-const queryArchiveEntries = async (opener: DBOpener, roomid: number, archiveStoreName: DanmakuArchiveStoreKeys, timestamp: number) => {
-  console.debug('getting archive data entries', roomid, archiveStoreName, timestamp);
-  const archiveEntries = await queryDBValues<ArchiveGzipData>(opener, archiveStoreName, 'roomid, timestamp', IDBKeyRange.only([roomid, timestamp]));
-  console.debug('retrived archive data entries', roomid, archiveEntries.length);
-  let entries: ArchiveDanmakuData[] = [];
+  const archiveEntries = await db[stores.archive].where(['roomid', 'timestamp']).equals([roomid, timestamp]).toArray();
   for (const archive of archiveEntries) {
     entries = entries.concat(await unzipObj(archive.gzipped));
   }
-  console.debug('flattened archive data entries', roomid, entries.length);
-  return entries;
-};
-const queryDanmakuEntries = async (opener: DBOpener, roomid: number, storeName: DanmakuStoreKeys, timestamp: number) => {
-  console.debug('getting danmaku data entries', roomid, storeName, timestamp);
-  const entries = await queryDBValues<DanmakuData>(opener, storeName, 'roomid, timestamp', IDBKeyRange.bound([roomid, timestamp], [roomid, timestamp + 86400e3], false, true));
-  console.debug('retrived danmaku data entries', roomid, entries.length);
-  return entries;
-};
-const getDanmakuEntries = (roomid: number, type: RecordType, timestamp: number) => {
-  const getEntries = async (storeName: DanmakuStoreKeys, archiveStoreName: DanmakuArchiveStoreKeys) => {
-    return (await queryDanmakuEntries(openDanmakuDB, roomid, storeName, timestamp)).concat(
-      await queryArchiveEntries(openDanmakuDB, roomid, archiveStoreName, timestamp)
-    ).sort((a, b) => a.timestamp - b.timestamp);
-  };
+  entries = entries.concat(
+    await db[stores.store].where(['roomid', 'timestamp']).between([roomid, timestamp], [roomid, timestamp + 86400e3], true, false).toArray()
+  );
   if (type === 'danmaku') {
-    return getEntries('danmaku', 'danmakuArchive');
-  } else {
-    return getEntries('hookedDanmaku', 'hookedDanmakuArchive');
+    const roominfoEntries = await db.roominfo.where(['roomid', 'timestamp']).between([roomid, timestamp], [roomid, timestamp + 86400e3], true, false).toArray();
+    for (const roominfo of roominfoEntries) {
+      entries.push({
+        roomid: roomid,
+        timestamp: roominfo.timestamp,
+        json: JSON.stringify({ cmd: 'getInfoByRoom', data: await unzipObj(roominfo.gzipped) }),
+      });
+    }
+  }
+
+  return entries.sort((a, b) => a.timestamp - b.timestamp);
+};
+
+const deleteRoomEntries = async (roomid: number, type: RecordType, timestamp?: number) => {
+  const stores = typeToStore[type];
+  for (const store of [stores.store, stores.archive]) {
+    if (timestamp) {
+      await db[store].where(['roomid', 'timestamp']).between([roomid, timestamp], [roomid, timestamp + 86400e3], true, false).delete();
+    } else {
+      await db[store].where('roomid').equals(roomid).delete();
+    }
   }
 };
-const deleteRoomEntries = async (roomid: number, type: RecordType, timestamp?: number) => {
-  const deleteWithQuery = async (indexName: string, query: IDBKeyRange) => {
-    if (type === 'danmaku') {
-      await removeEntriesByIndex(openDanmakuDB, 'danmaku', indexName, query);
-      await removeEntriesByIndex(openDanmakuDB, 'danmakuArchive', indexName, query);
-    } else {
-      await removeEntriesByIndex(openDanmakuDB, 'hookedDanmaku', indexName, query);
-      await removeEntriesByIndex(openDanmakuDB, 'hookedDanmakuArchive', indexName, query);
+
+
+const resetUploadSuccess = async () => {
+  await db.uploadSuccess.clear();
+};
+
+
+type ArchiveDanmakuData = DanmakuData & { key: number };
+type QueriedDanmaku = { [roomid: number]: ArchiveDanmakuData[] };
+
+const removeArchivedEntries = async (type: RecordType) => {
+  const archivedEntries: { [archivePK: number]: ArchiveGzipData } = {};
+
+  await db[typeToStore[type].archive].where('cleaned').equals(0).each((obj, cursor) => {
+    archivedEntries[cursor.primaryKey] = obj;
+  });
+
+  for (const archivePK of objNumKeys(archivedEntries)) {
+    const entries: ArchiveDanmakuData[] = await unzipObj(archivedEntries[archivePK].gzipped)
+    await db[typeToStore[type].store].bulkDelete(entries.map(entry => entry.key));
+    await db[typeToStore[type].archive].update(archivePK, { cleaned: 1 });
+  }
+};
+
+const archiveDanmakuData = async (type: RecordType) => {
+  await removeArchivedEntries(type);
+
+  const entries: QueriedDanmaku = {};
+  await db[typeToStore[type].store].where('timestamp').below(timestampDayFloor()).each((entry, cursor) => {
+    getDefault(entries, entry.roomid, []).push({ key: cursor.primaryKey, ...entry });
+  });
+
+  for (const roomid of objNumKeys(entries)) {
+    const entriesByDay: { [floorTs: number]: ArchiveDanmakuData[] } = {};
+    entries[roomid].forEach(entry => {
+      getDefault(entriesByDay, timestampDayFloor(entry.timestamp), []).push(entry);
+    });
+    for (const timestamp of objNumKeys(entriesByDay)) {
+      await db[typeToStore[type].archive].add({
+        roomid, timestamp, cleaned: 0, gzipped: await gzipObj(entriesByDay[timestamp]),
+      });
+    }
+    await removeArchivedEntries(type);
+  }
+};
+
+const typeToKeepDays: Record<RecordType, keyof Config> = {
+  danmaku: 'archiveKeepDays',
+  hookedDanmaku: 'webArchiveKeepDays',
+};
+const removeOldEntries = async (type: RecordType, config: Config) => {
+  const keepDays = config[typeToKeepDays[type]] as number;
+  const timestamp = timestampDayFloor(Date.now(), keepDays);
+  await db[typeToStore[type].archive].where('timestamp').below(timestamp).delete();
+  await db.uploadSuccess.where(['type', 'timestamp']).between([type, 0], [type, timestamp], false, false).delete();
+};
+
+
+const sourceNames: Record<RecordType, string> = {
+  danmaku: 'background',
+  hookedDanmaku: 'webpage',
+};
+const uploadEntry = async (roomid: number, type: RecordType, timestamp: number) => {
+  let entries: DanmakuData[] | null = null;
+  const step = (await getConfig()).uploadSliceSize;
+
+  const logUploadResult = async (level: string, msg: string) => {
+    await db.uploadLog.add({ timestamp: Date.now(), level, msg: `[${roomid}-${type}-${timestamp}] ${msg}` });
+  }
+  const uploadEntryToEndpoint = async (endpoint: URL) => {
+    if (!entries) entries = await getDanmakuEntries(roomid, type, timestamp);
+    let page = 0;
+    const rand = Math.round(Math.random() * 1e6);
+    try {
+      while (page * step < entries.length) {
+        const jsonl = entries.slice(page * step, (page + 1) * step).map(i => `[${i.timestamp},${i.json}]`).join('\n');
+        const r = await timedFetch(endpoint, {
+          method: 'PUT',
+          mode: 'cors',
+          headers: { 'Content-Encoding': 'deflate' },
+          body: await gzipObj({
+            roomid,
+            src: sourceNames[type],
+            timestamp,
+            rand,
+            page,
+            size: step,
+            length: entries.length,
+            jsonl,
+          }, 'deflate'),
+        });
+        if (r.status !== 200) throw new Error(`HTTP status ${r.status}: ${(await r.text()).slice(0, 3000)}`);
+        const rsp = await r.json();
+        if (rsp.code) throw new Error(`non-zero code ${rsp.code}: ${rsp.msg || ''}`);
+        page += 1;
+      }
+      await logUploadResult('INFO', `Successfully uploaded to "${endpoint}"`);
+      return true;
+    } catch (e) {
+      await logUploadResult('ERROR', `Fetch error while uploading to "${endpoint}": ${(e as any).message}`);
     }
   };
-  if (timestamp) {
-    await deleteWithQuery('roomid, timestamp', IDBKeyRange.bound([roomid, timestamp], [roomid, timestamp + 86400e3], false, true));
-  } else {
-    await deleteWithQuery('roomid', IDBKeyRange.only(roomid));
+
+  for (const endpoint of (await getUploadEndpoints())) {
+    if (!((await db.uploadSuccess.get({roomid, type, timestamp, endpoint: endpoint.toString()}))?.success)) {
+      if (await uploadEntryToEndpoint(endpoint)) {
+        await db.uploadSuccess.put({roomid, type, timestamp, endpoint: endpoint.toString(), success: true});
+      }
+    }
   }
-}
+};
+
+
+const uploadAllEntries = async (type: RecordType) => {
+  const keys: any[] = await db[typeToStore[type].archive].orderBy(['roomid', 'timestamp']).uniqueKeys();
+  console.debug('start uploading to remote for ', type);
+  for (const key of (keys as number[][])) {
+    const roomid = Number(key[0]);
+    const timestamp = Number(key[1]);
+    await uploadEntry(roomid, type, timestamp);
+  }
+};
+
+
+const archiveDanmaku = async () => {
+  console.debug('start archiving and uploading');
+  const config = await getConfig();
+  for (const type of objKeys(typeToStore)) {
+    await archiveDanmakuData(type);
+    await removeOldEntries(type, config);
+    await uploadAllEntries(type);
+  }
+  await db.uploadLog.where('timestamp').below(timestampDayFloor(undefined, config.uploadLogKeepDays)).delete();
+  await db.roominfo.where('timestamp').below(timestampDayFloor(undefined, config.archiveKeepDays)).delete();
+};
+
 
 export {
+  recordTypes,
   commitDanmakuItems,
   commitRoomMeta,
-  archiveDanmaku,
   getRecordRooms,
   getRoomTimestamps,
   getDanmakuEntries,
   deleteRoomEntries,
+  resetUploadSuccess,
+  archiveDanmaku,
 };

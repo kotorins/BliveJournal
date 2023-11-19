@@ -1,81 +1,49 @@
 <script setup lang="ts">
-import { RouterLink, RouterView } from 'vue-router'
+import { ref, computed } from 'vue';
+import { NCard, NTabs, NTabPane, NMessageProvider } from 'naive-ui';
+
+import RoomsView from '@/views/RoomsView.vue';
+import RecordDataView from '@/views/RecordDataView.vue';
+import ConfigView from '@/views/ConfigView.vue';
+
+const validKeys = [
+  'rooms',
+  'records',
+  'configs',
+];
+const keyFromHash = () => {
+  const hashName = (/^#([a-z]+)/.exec(location.hash) || ['', ''])[1];
+  if (validKeys.includes(hashName)) return hashName;
+};
+
+const tabKey = ref(keyFromHash() || 'rooms');
+const proxiedKey = computed({
+  get: () => tabKey.value,
+  set: (value: string) => {
+    tabKey.value = value;
+    const newUrl = new URL(location.href);
+    newUrl.hash = value;
+    location.replace(newUrl);
+  }
+});
+
 </script>
 
 <template>
-  <header>
-    <div class="wrapper">
-      <nav>
-        <RouterLink to="/rooms">Rooms</RouterLink>
-        <RouterLink to="/records">Records</RouterLink>
-        <RouterLink to="/configs">Config</RouterLink>
-      </nav>
-    </div>
-  </header>
-
-  <RouterView />
+  <n-message-provider>
+    <n-card :bordered="false" :style="{ maxWidth: '1300px', margin: 'auto', paddingTop: '20px' }">
+      <n-tabs justify-content="space-evenly" type="line" size="large" v-model:value="proxiedKey">
+        <n-tab-pane name="rooms" :tab="$t('pages.rooms')" display-directive="if">
+          <RoomsView :compact="false" />
+        </n-tab-pane>
+        <n-tab-pane name="records" :tab="$t('pages.records')" display-directive="show">
+          <RecordDataView />
+        </n-tab-pane>
+        <n-tab-pane name="configs" :tab="$t('pages.configs')" display-directive="if">
+          <ConfigView />
+        </n-tab-pane>
+      </n-tabs>
+    </n-card>
+  </n-message-provider>
 </template>
 
-<style scoped>
-header {
-  line-height: 1.5;
-  max-height: 100vh;
-}
-
-.logo {
-  display: block;
-  margin: 0 auto 2rem;
-}
-
-nav {
-  width: 100%;
-  font-size: 12px;
-  text-align: center;
-  margin-top: 2rem;
-}
-
-nav a.router-link-exact-active {
-  color: var(--color-text);
-}
-
-nav a.router-link-exact-active:hover {
-  background-color: transparent;
-}
-
-nav a {
-  display: inline-block;
-  padding: 0 1rem;
-  border-left: 1px solid var(--color-border);
-}
-
-nav a:first-of-type {
-  border: 0;
-}
-
-@media (min-width: 1024px) {
-  header {
-    display: flex;
-    place-items: center;
-    padding-right: calc(var(--section-gap) / 2);
-  }
-
-  .logo {
-    margin: 0 2rem 0 0;
-  }
-
-  header .wrapper {
-    display: flex;
-    place-items: flex-start;
-    flex-wrap: wrap;
-  }
-
-  nav {
-    text-align: left;
-    margin-left: -1rem;
-    font-size: 1rem;
-
-    padding: 1rem 0;
-    margin-top: 1rem;
-  }
-}
-</style>

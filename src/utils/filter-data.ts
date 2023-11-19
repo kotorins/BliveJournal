@@ -1,3 +1,5 @@
+import { getCmdFilterSet } from './configs';
+
 const getCmd = (data: any) => data.cmd;
 
 const lastData: { [roomid: number]: { [cmd: string]: string } } = {};
@@ -8,16 +10,6 @@ const filterDuplicate = (roomid: number, cmd: string, json: string): boolean => 
   return true;
 }
 
-
-const IGNORE_CMDS = new Set([
-  "STOP_LIVE_ROOM_LIST",
-]);
-
-const DEDUP_CMDS = new Set([
-  "ONLINE_RANK_COUNT",
-  "WATCHED_CHANGE",
-  "ONLINE_RANK_V2",
-]);
 
 const sanitizeData = (data: any): any => {
   try {
@@ -33,14 +25,13 @@ const sanitizeData = (data: any): any => {
 };
 
 
-const filterData = (roomid: number, cmd: string, json: string, storeName: string): boolean => {
-  if (IGNORE_CMDS.has(cmd)) {
-    console.debug('ignore cmd', roomid, json);
+const filterData = async (roomid: number, data: any, json: string, storeType: string): Promise<boolean> => {
+  const cmd = getCmd(data);
+  if ((await getCmdFilterSet('ignore')).has(cmd)) {
     return false;
   }
-  if (DEDUP_CMDS.has(cmd)) {
-    if (!filterDuplicate(roomid, `${storeName}:${cmd}`, json)) {
-      console.debug('ignore duplicate', roomid, json);
+  if ((await getCmdFilterSet('dedup')).has(cmd)) {
+    if (!filterDuplicate(roomid, `${storeType}:${cmd}`, json)) {
       return false;
     }
   }
@@ -48,7 +39,6 @@ const filterData = (roomid: number, cmd: string, json: string, storeName: string
 }
 
 export {
-  getCmd,
   sanitizeData,
   filterData,
 };

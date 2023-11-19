@@ -23,6 +23,9 @@ export default defineConfig({
     minify: false,
     sourcemap: true,
   },
+  define: {
+    '__INTLIFY_JIT_COMPILATION__': true,
+  },
   plugins: [
     vue(),
     vueJsx(),

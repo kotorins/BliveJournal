@@ -1,11 +1,5 @@
-import './assets/main.css'
+import { createVueApp } from './vue';
+import PopupApp from './PopupApp.vue'
 
-import { createApp } from 'vue'
-import App from './PopupApp.vue'
-import router from './router'
-
-const app = createApp(App)
-
-app.use(router)
-
-app.mount('#app')
+const app = createVueApp(PopupApp);
+app.mount('#app');

@@ -26,6 +26,13 @@ npm install
 npm run build
 ```
 
+## Webhook配置
+
+可以添加Webhook地址自动导出浏览器中的弹幕
+
+可用`python server_example.py`运行实例服务器监听本地端口，然后在Webhook地址中填入`http://127.0.0.1:8000/`从而自动导出到文件。
+
+
 # TODO
 
 ## 弹幕数据流
@@ -33,12 +40,13 @@ npm run build
 - [x] 从直播间页面直接记录弹幕
 - [x] 配置后台直播间列表
 - [x] 后台建立弹幕连接监控直播间弹幕
-- [ ] 录制过滤规则的配置
+- [x] 录制过滤规则的配置
 - [x] 储存弹幕数据
 - [x] 基本文件导出
 - [ ] 更多导出格式，简单的除重检查
-- [ ] UI界面
+- [x] UI界面
 - [x] 自动删除旧弹幕数据
+- [x] 从支持的Webhook API接口导出
 - [ ] 允许定期连接网盘/执行自定义脚本，用于自动上传导出
 - [ ] 简单的弹幕数据分析？
 
@@ -51,5 +59,6 @@ npm run build
 # References
 
 - [simon300000/bilibili-live-ws](https://github.com/simon300000/bilibili-live-ws)
+- [Dixie.js](https://dexie.org/docs/)
 - [Access variables and functions defined in page context using a content script](https://stackoverflow.com/questions/9515704)
 - [Persistent Service Worker in Chrome Extension](https://stackoverflow.com/questions/66618136)
